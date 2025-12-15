@@ -98,14 +98,17 @@ import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 export const fetch: typeof globalThis.fetch = (() => {
     const baseFetch = globalThis.fetch; 
     
-    // 1. Agent for Internet calls (Uses Proxy + Unlimited Timeout)
+    // 1. Internet Agent (Proxy + Unlimited Timeout)
     const proxyAgent = new EnvHttpProxyAgent({
-        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0 
+        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
 
-    // 2. Agent for Localhost calls (Direct Connection + Unlimited Timeout)
+    // 2. Localhost Agent (Direct + Unlimited Timeout + FORCE HTTP/1.1)
     const localAgent = new Agent({
-        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0 
+        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0,
+        pipelining: 0,    // Disable pipelining (reduces complexity)
+        allowH2: false,   // Disable HTTP/2 (Ollama hates this)
+        keepAlive: true   // Keep connection open for performance
     });
 
     return async (input: any, init?: any): Promise<Response> => {
@@ -127,8 +130,7 @@ export const fetch: typeof globalThis.fetch = (() => {
                 url = url.replace('localhost', '127.0.0.1');
             }
 
-            // [FIX 2] Determine which Agent to use
-            // If it's a local IP, use the "Direct" agent to bypass Corporate Proxies
+            // [FIX 2] Determine Agent (Bypass Proxy for Local)
             const isLocal = url.includes('127.0.0.1') || url.includes('0.0.0.0');
             const selectedDispatcher = isLocal ? localAgent : proxyAgent;
 
@@ -148,6 +150,12 @@ export const fetch: typeof globalThis.fetch = (() => {
                 options.headers = h;
             }
 
+            // [FIX 3] Force Host Header to match IP (Ollama Fix)
+            if (isLocal && options.headers) {
+                // @ts-ignore
+                options.headers['Host'] = '127.0.0.1';
+            }
+
             // Handle Duplex
             if (options.body) {
                 const isStringOrBuffer = typeof options.body === 'string' || 
@@ -156,15 +164,17 @@ export const fetch: typeof globalThis.fetch = (() => {
                 if (!isStringOrBuffer && !options.duplex) { options.duplex = 'half'; }
             }
 
-            // console.log(`[Net-Wrapper] ✅ PRIMARY: Fetching ${url} (Local: ${isLocal})`);
-
+            // LOGGING: Print the real error cause if it fails
             return await undiciFetch(url, {
                 ...options,
                 dispatcher: selectedDispatcher
             }) as any;
 
-        } catch (err) {
-            console.warn("[Net-Wrapper] ⚠️ SAFETY NET: Undici failed, using fallback.", err);
+        } catch (err: any) {
+            // Detailed Error Logging
+            const cause = err.cause ? JSON.stringify(err.cause) : "Unknown";
+            console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
+            
             return baseFetch(input, init);
         }
     };
