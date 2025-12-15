@@ -125,6 +125,11 @@ export const fetch: typeof globalThis.fetch = (() => {
                 throw new Error("Cannot parse URL for undici");
             }
 
+            // [FIX] Force IPv4 for Localhost to prevent Windows ::1 errors
+            if (url.includes('localhost')) {
+                url = url.replace('localhost', '127.0.0.1');
+            }
+
             // --- PREPARE OPTIONS ---
             let options = init || {};
             if (typeof input === 'object' && input !== null && 'method' in input) {
@@ -157,8 +162,8 @@ export const fetch: typeof globalThis.fetch = (() => {
                 }
             }
 
-            // LOGGING: PRIMARY ACTIVE
-            // console.log("[Net-Wrapper] ✅ PRIMARY: Using Unlimited Timeout for:", url);
+            // LOGGING: PRIMARY ACTIVE (Uncommented so you can see it!)
+            console.log("[Net-Wrapper] ✅ PRIMARY: Using Unlimited Timeout for:", url);
 
             return await undiciFetch(url, {
                 ...options,
