@@ -93,7 +93,7 @@
  * ```
  */
 
-import { EnvHttpProxyAgent, setGlobalDispatcher, fetch as undiciFetch } from "undici"
+import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 
 let mockFetch: typeof globalThis.fetch | undefined
 
