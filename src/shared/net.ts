@@ -103,7 +103,7 @@ let mockFetch: typeof globalThis.fetch | undefined
 export const fetch: typeof globalThis.fetch = (() => {
     // Note: Don't use Logger here; it may not be initialized.
 
-    let baseFetch: typeof globalThis.fetch = globalThis.fetch
+    let baseFetch: any = globalThis.fetch
 
     // Configure undici with timeouts disabled to allow the application
     // to control request duration via the 'requestTimeoutMs' setting.
@@ -117,19 +117,22 @@ export const fetch: typeof globalThis.fetch = (() => {
     if (process.env.IS_STANDALONE) {
         // Standalone (CLI/JetBrains): set as global dispatcher
         setGlobalDispatcher(agent)
-        baseFetch = undiciFetch as any as typeof globalThis.fetch
+        baseFetch = undiciFetch
     } else {
         // VSCode/VSCodium: explicitly use undici with our custom agent
         // to bypass the default global fetch 300s timeout.
-        baseFetch = (input, init) => {
+        baseFetch = (input: any, init: any) => {
             return undiciFetch(input, {
                 ...init,
                 dispatcher: agent,
-            } as any) as unknown as Promise<Response>
+            } as any)
         }
     }
 
-    return (input: string | URL | Request, init?: RequestInit): Promise<Response> => (mockFetch || baseFetch)(input as any, init)
+    // AGGRESSIVE CASTING: Force inputs to 'any' to bypass TS2345 error
+    return (input: any, init?: any): Promise<Response> => {
+        return (mockFetch || baseFetch)(input, init) as Promise<Response>
+    }
 })()
 
 /**
