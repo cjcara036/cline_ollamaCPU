@@ -98,29 +98,38 @@ import { EnvHttpProxyAgent, setGlobalDispatcher, fetch as undiciFetch } from "un
 let mockFetch: typeof globalThis.fetch | undefined
 
 /**
- * Platform-configured fetch that respects proxy settings.
- * Use this instead of global fetch to ensure proper proxy configuration.
- *
- * @example
- * ```typescript
- * import { fetch } from '@/shared/net'
- * const response = await fetch('https://api.example.com')
- * ```
+ * Platform-configured fetch that respects proxy settings and removes default timeouts.
  */
 export const fetch: typeof globalThis.fetch = (() => {
-	// Note: Don't use Logger here; it may not be initialized.
+    // Note: Don't use Logger here; it may not be initialized.
 
-	let baseFetch: typeof globalThis.fetch = globalThis.fetch
-	// Note: See esbuild.mjs, process.env.IS_STANDALONE is statically rewritten
-	// 'true' in the JetBrains/CLI build.
-	if (process.env.IS_STANDALONE) {
-		// Configure undici with ProxyAgent
-		const agent = new EnvHttpProxyAgent({})
-		setGlobalDispatcher(agent)
-		baseFetch = undiciFetch as any as typeof globalThis.fetch
-	}
+    let baseFetch: typeof globalThis.fetch = globalThis.fetch
 
-	return (input: string | URL | Request, init?: RequestInit): Promise<Response> => (mockFetch || baseFetch)(input, init)
+    // Configure undici with timeouts disabled to allow the application
+    // to control request duration via the 'requestTimeoutMs' setting.
+    const agent = new EnvHttpProxyAgent({
+        headersTimeout: 0,
+        connectTimeout: 0,
+        keepAliveTimeout: 0,
+        bodyTimeout: 0,
+    })
+
+    if (process.env.IS_STANDALONE) {
+        // Standalone (CLI/JetBrains): set as global dispatcher
+        setGlobalDispatcher(agent)
+        baseFetch = undiciFetch as any as typeof globalThis.fetch
+    } else {
+        // VSCode/VSCodium: explicitly use undici with our custom agent
+        // to bypass the default global fetch 300s timeout.
+        baseFetch = (input, init) => {
+            return undiciFetch(input, {
+                ...init,
+                dispatcher: agent,
+            } as any) as unknown as Promise<Response>
+        }
+    }
+
+    return (input: string | URL | Request, init?: RequestInit): Promise<Response> => (mockFetch || baseFetch)(input, init)
 })()
 
 /**
