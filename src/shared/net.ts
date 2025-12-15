@@ -99,91 +99,80 @@ let mockFetch: typeof globalThis.fetch | undefined
 
 /**
  * Platform-configured fetch that respects proxy settings and removes default timeouts.
+ * Includes automatic fallback to standard fetch if undici fails.
  */
 export const fetch: typeof globalThis.fetch = (() => {
-    // Note: Don't use Logger here; it may not be initialized.
-
-    let baseFetch: any = globalThis.fetch
-
+    const baseFetch = globalThis.fetch; 
+    
     const agent = new EnvHttpProxyAgent({
-        headersTimeout: 0,
-        connectTimeout: 0,
-        keepAliveTimeout: 0,
-        bodyTimeout: 0,
-    })
+        headersTimeout: 0, 
+        connectTimeout: 0, 
+        keepAliveTimeout: 0, 
+        bodyTimeout: 0 
+    });
 
-    if (process.env.IS_STANDALONE) {
-        setGlobalDispatcher(agent)
-        baseFetch = undiciFetch
-    } else {
-        baseFetch = (input: any, init: any) => {
-            
-            // --- SANITIZATION START ---
+    return async (input: any, init?: any): Promise<Response> => {
+        try {
+            // --- PREPARE URL ---
             let url: string;
+            if (typeof input === 'string') {
+                url = input;
+            } else if (input instanceof URL) {
+                url = input.href;
+            } else if (typeof input === 'object' && input !== null && 'url' in input) {
+                url = input.url;
+            } else {
+                throw new Error("Cannot parse URL for undici");
+            }
+
+            // --- PREPARE OPTIONS ---
             let options = init || {};
+            if (typeof input === 'object' && input !== null && 'method' in input) {
+                options = {
+                    method: input.method,
+                    headers: input.headers,
+                    body: input.body,
+                    signal: input.signal,
+                    ...options
+                };
+            }
 
-            try {
-                // Case 1: Input is already a string
-                if (typeof input === 'string') {
-                    url = input;
+            // --- SANITIZE HEADERS ---
+            if (options.headers && typeof options.headers.entries === 'function' && !Array.isArray(options.headers)) {
+                const h: Record<string, string> = {};
+                for (const [key, value] of options.headers.entries()) {
+                    h[key] = value;
                 }
-                // Case 2: Input is a URL Object (has .href)
-                else if (input instanceof URL) {
-                    url = input.href;
-                }
-                // Case 3: Input is a Request Object (has .url)
-                else if (typeof input === 'object' && input !== null && 'url' in input) {
-                    url = input.url;
-                    // Merge properties from the Request object
-                    options = {
-                        method: input.method,
-                        headers: input.headers,
-                        body: input.body,
-                        signal: input.signal,
-                        ...options // init options take precedence
-                    };
-                }
-                // Case 4: Fallback (Try to stringify)
-                else {
-                    url = String(input);
-                }
+                options.headers = h;
+            }
 
-                // Fix Headers: Convert Headers object to plain object
-                if (options.headers && typeof options.headers.entries === 'function' && !Array.isArray(options.headers)) {
-                    const headers: Record<string, string> = {};
-                    for (const [key, value] of options.headers.entries()) {
-                        headers[key] = value;
-                    }
-                    options.headers = headers;
-                }
-
-                // Add 'duplex' for streams (Required by undici)
-                if (options.body && !options.duplex) {
+            // --- HANDLE BODY & DUPLEX ---
+            if (options.body) {
+                const isStringOrBuffer = typeof options.body === 'string' || 
+                                         (options.body instanceof Uint8Array) || 
+                                         (globalThis.Buffer && Buffer.isBuffer(options.body));
+                
+                if (!isStringOrBuffer && !options.duplex) {
                     options.duplex = 'half';
                 }
-
-            } catch (e) {
-                console.error("[Net-Wrapper] Error sanitizing args:", e);
-                // Fallback to original input if sanitization explodes
-                url = input;
             }
-            // --- SANITIZATION END ---
 
-            // Console log to debug if it still fails (View in Help > Toggle Developer Tools)
-            // console.log("[Net-Wrapper] Fetching:", url);
+            // LOGGING: PRIMARY ACTIVE
+            // console.log("[Net-Wrapper] ✅ PRIMARY: Using Unlimited Timeout for:", url);
 
-            return undiciFetch(url, {
+            return await undiciFetch(url, {
                 ...options,
-                dispatcher: agent,
-            } as any)
-        }
-    }
+                dispatcher: agent
+            }) as any;
 
-    // Force return type to Promise<Response> to satisfy TypeScript
-    return (input: any, init?: any): Promise<Response> => {
-        return (mockFetch || baseFetch)(input, init) as Promise<Response>
-    }
-})()
+        } catch (err) {
+            // LOGGING: SAFETY NET ACTIVE
+            console.warn("[Net-Wrapper] ⚠️ SAFETY NET: Undici failed, using fallback. Error:", err);
+            return baseFetch(input, init);
+        }
+    };
+})();
+
 /**
  * Mocks `fetch` for testing and calls `callback`. Then restores `fetch`. If the
  * specified callback returns a Promise, the fetch is restored when that Promise
