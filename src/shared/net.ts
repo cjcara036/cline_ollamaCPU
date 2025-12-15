@@ -97,12 +97,12 @@ import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 export const fetch: typeof globalThis.fetch = (() => {
     const baseFetch = globalThis.fetch; 
     
-    // 1. Internet Agent (Proxy + Unlimited Timeout)
+    // 1. Internet Agent
     const proxyAgent = new EnvHttpProxyAgent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
 
-    // 2. Localhost Agent (Direct + Unlimited Timeout + FORCE HTTP/1.1)
+    // 2. Localhost Agent (Direct Connection)
     const localAgent = new Agent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0,
         pipelining: 0,
@@ -124,71 +124,70 @@ export const fetch: typeof globalThis.fetch = (() => {
                 throw new Error("Cannot parse URL");
             }
 
-            // Force IPv4 for Windows
+            // Force IPv4 for Windows Localhost
             if (url.includes('localhost')) {
                 url = url.replace('localhost', '127.0.0.1');
             }
 
-            // --- 2. RESOLVE AGENT ---
+            // --- 2. SELECT DISPATCHER ---
             const isLocal = url.includes('127.0.0.1') || url.includes('0.0.0.0');
             const selectedDispatcher = isLocal ? localAgent : proxyAgent;
 
-            // --- 3. EXTRACT RAW DATA ---
-            let method = 'GET';
-            let headers: any = {};
-            let body: any = undefined;
-            // Note: We deliberately IGNORE 'signal' here to fix UND_ERR_INVALID_ARG
-
-            if (typeof input === 'object' && input !== null && 'method' in input) {
-                method = input.method;
-                body = input.body;
-                headers = input.headers;
-            }
-
-            if (init) {
-                if (init.method) method = init.method;
-                if (init.body) body = init.body;
-                if (init.headers) headers = init.headers;
-            }
-
-            // --- 4. CLEAN HEADERS ---
-            const cleanHeaders: Record<string, string> = {};
-            if (headers) {
-                if (typeof headers.entries === 'function' && !Array.isArray(headers)) {
-                    for (const [key, value] of headers.entries()) {
-                        cleanHeaders[key] = value;
-                    }
-                } else if (typeof headers === 'object') {
-                    for (const key in headers) {
-                        if (headers[key] !== undefined && headers[key] !== null) {
-                            cleanHeaders[key] = String(headers[key]);
-                        }
-                    }
-                }
-            }
-            
-            if (isLocal) {
-                cleanHeaders['Host'] = '127.0.0.1';
-            }
-
-            // --- 5. CONSTRUCT SAFE OPTIONS ---
+            // --- 3. CONSTRUCT CLEAN OPTIONS ---
+            // We build a fresh object from scratch to avoid hidden properties
             const fetchOptions: any = {
-                method: method,
-                headers: cleanHeaders,
-                body: body,
                 dispatcher: selectedDispatcher
-                // signal: REMOVED to prevent crash
             };
 
-            // Add Duplex for Streams
-            if (body) {
-                const isPrimitive = typeof body === 'string' || 
-                                    (globalThis.Buffer && Buffer.isBuffer(body)) || 
-                                    (body instanceof Uint8Array);
-                if (!isPrimitive) {
-                    fetchOptions.duplex = 'half'; 
+            // Method
+            fetchOptions.method = (init?.method || input?.method || 'GET').toUpperCase();
+
+            // Headers
+            const rawHeaders = init?.headers || input?.headers;
+            const cleanHeaders: Record<string, string> = {};
+            
+            if (rawHeaders) {
+                if (typeof rawHeaders.entries === 'function' && !Array.isArray(rawHeaders)) {
+                    for (const [key, value] of rawHeaders.entries()) {
+                        cleanHeaders[key] = String(value);
+                    }
+                } else if (typeof rawHeaders === 'object') {
+                    for (const key in rawHeaders) {
+                         if (Object.prototype.hasOwnProperty.call(rawHeaders, key)) {
+                            cleanHeaders[key] = String(rawHeaders[key]);
+                         }
+                    }
                 }
             }
+            if (isLocal) cleanHeaders['Host'] = '127.0.0.1';
+            fetchOptions.headers = cleanHeaders;
+
+            // Body
+            const rawBody = init?.body || input?.body;
+            if (rawBody) {
+                fetchOptions.body = rawBody;
+                
+                // Calculate Duplex
+                const isPrimitive = typeof rawBody === 'string' || 
+                                    (globalThis.Buffer && Buffer.isBuffer(rawBody)) || 
+                                    (rawBody instanceof Uint8Array);
+                if (!isPrimitive) {
+                    fetchOptions.duplex = 'half';
+                }
+            }
+
+            // Signal - Explicitly Omitted to fix crash
+            // fetchOptions.signal = undefined; 
+
+            // --- DEBUG LOG ---
+            // This will show us exactly what we are sending before it crashes
+            // console.log(`[Net-Wrapper] Trying URL: ${url}`);
+            // console.log(`[Net-Wrapper] Options:`, JSON.stringify({ 
+            //    method: fetchOptions.method,
+            //    headers: Object.keys(fetchOptions.headers),
+            //    hasBody: !!fetchOptions.body,
+            //    duplex: fetchOptions.duplex
+            // }));
 
             return await undiciFetch(url, fetchOptions) as any;
 
