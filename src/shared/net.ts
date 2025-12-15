@@ -92,6 +92,7 @@
  * await axios.get(url, { ...getAxiosSettings() })
  * ```
  */
+
 import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 
 export const fetch: typeof globalThis.fetch = (() => {
@@ -102,7 +103,7 @@ export const fetch: typeof globalThis.fetch = (() => {
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
 
-    // 2. Localhost Agent (Simplified to avoid config errors)
+    // 2. Local Agent (Standard)
     const localAgent = new Agent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
@@ -117,81 +118,68 @@ export const fetch: typeof globalThis.fetch = (() => {
                 url = input.href;
             } else if (typeof input === 'object' && input !== null && 'url' in input) {
                 url = input.url;
-            } else {
-                throw new Error("Cannot parse URL");
             }
 
-            // Force IPv4 for Windows Localhost
-            if (url.includes('localhost')) {
-                url = url.replace('localhost', '127.0.0.1');
-            }
+            // Typo Fixes
+            if (url.includes('\\')) url = url.replace(/\\/g, '/');
+            if (url.includes('localhost')) url = url.replace('localhost', '127.0.0.1');
 
-            // --- 2. SELECT DISPATCHER ---
-            const isLocal = url.includes('127.0.0.1') || url.includes('0.0.0.0');
+            // --- 2. SELECT AGENT ---
+            let hostname = 'localhost';
+            try { hostname = new URL(url).hostname; } catch (e) {}
+            
+            const isPrivate = /^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(hostname);
+            const isLocal = isPrivate || hostname === 'localhost' || hostname === '0.0.0.0';
+            
             const selectedDispatcher = isLocal ? localAgent : proxyAgent;
 
-            // --- 3. PREPARE RAW DATA ---
+            // --- 3. EXTRACT DATA ---
             let method = 'GET';
-            let headers: any = {};
             let rawBody: any = undefined;
+            
+            // We ignore original headers to avoid pollution
+            // let originalHeaders: any = {}; 
 
             if (typeof input === 'object' && input !== null && 'method' in input) {
                 method = input.method || 'GET';
                 rawBody = input.body;
-                headers = input.headers;
+                // originalHeaders = input.headers;
             }
             if (init) {
                 if (init.method) method = init.method;
                 if (init.body) rawBody = init.body;
-                if (init.headers) headers = init.headers;
+                // if (init.headers) originalHeaders = init.headers;
             }
 
             method = method.toUpperCase();
+            if (method === 'GET' || method === 'HEAD') rawBody = undefined;
 
-            // --- 4. STRICT BODY HANDLING ---
-            if (method === 'GET' || method === 'HEAD') {
-                rawBody = undefined;
-            }
-
+            // --- 4. PREPARE BODY (JSON String) ---
             let finalBody = rawBody;
-
-            // [CRITICAL FIX] Convert Plain Objects to JSON Strings
-            if (finalBody !== undefined && finalBody !== null) {
-                // If it's already a string, buffer, or array buffer, leave it alone.
-                const isPrimitive = typeof finalBody === 'string' || 
-                                    Buffer.isBuffer(finalBody) || 
-                                    (finalBody instanceof Uint8Array);
-                
-                if (!isPrimitive) {
-                    // If it has a .text() method (like a Stream/Response), read it
-                    if (typeof finalBody.text === 'function') {
-                         finalBody = await finalBody.text();
-                    } 
-                    // Otherwise, assume it's a JSON object and stringify it
-                    else {
-                        try {
-                            finalBody = JSON.stringify(finalBody);
-                        } catch (e) {
-                            finalBody = String(finalBody);
-                        }
+            if (finalBody) {
+                if (typeof finalBody === 'string') {
+                    // Already a string, good.
+                } else if (typeof finalBody.text === 'function') {
+                    finalBody = await finalBody.text(); // Stream -> String
+                } else {
+                    try {
+                        finalBody = JSON.stringify(finalBody); // Object -> String
+                    } catch (e) {
+                        finalBody = String(finalBody);
                     }
                 }
             }
 
-            // --- 5. CLEAN HEADERS ---
-            const cleanHeaders: Record<string, string> = {};
-            if (headers) {
-                const entries = (typeof headers.entries === 'function' && !Array.isArray(headers)) 
-                    ? headers.entries() 
-                    : Object.entries(headers);
-                
-                for (const [key, value] of entries) {
-                    if (value !== undefined && value !== null) {
-                        cleanHeaders[key] = String(value);
-                    }
-                }
+            // --- 5. RECONSTRUCT HEADERS (Nuclear Option) ---
+            // We manually build a clean object. Undici hates VS Code header objects.
+            const cleanHeaders: Record<string, string> = {
+                'Content-Type': 'application/json',
+                'Connection': 'keep-alive'
+            };
+            
+            if (isLocal) {
+                cleanHeaders['Host'] = hostname;
             }
-            if (isLocal) cleanHeaders['Host'] = '127.0.0.1';
 
             // --- 6. SEND ---
             const fetchOptions: any = {
@@ -199,13 +187,15 @@ export const fetch: typeof globalThis.fetch = (() => {
                 headers: cleanHeaders,
                 dispatcher: selectedDispatcher
             };
-            
-            // Only attach body if valid
-            if (finalBody !== undefined && finalBody !== null) {
+
+            if (finalBody) {
                 fetchOptions.body = finalBody;
             }
 
-            console.log(`[Net-Wrapper] ✅ SUCCESS: Sending via Undici to ${url}`);
+            // DEBUG LOGS
+            console.log(`[Net-Wrapper] URL: ${url}`);
+            console.log(`[Net-Wrapper] Agent: ${isLocal ? 'Local' : 'Proxy'}`);
+            console.log(`[Net-Wrapper] Body Type: ${typeof finalBody}`);
 
             return await undiciFetch(url, fetchOptions) as any;
 
@@ -216,6 +206,7 @@ export const fetch: typeof globalThis.fetch = (() => {
         }
     };
 })();
+
 /**
  * Mocks `fetch` for testing and calls `callback`. Then restores `fetch`. If the
  * specified callback returns a Promise, the fetch is restored when that Promise
