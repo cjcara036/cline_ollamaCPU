@@ -97,12 +97,12 @@ import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 export const fetch: typeof globalThis.fetch = (() => {
     const baseFetch = globalThis.fetch; 
     
-    // 1. Internet Agent (Proxy + Unlimited Timeout)
+    // 1. Internet Agent
     const proxyAgent = new EnvHttpProxyAgent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
 
-    // 2. Localhost Agent (Direct + Unlimited Timeout)
+    // 2. Localhost Agent
     const localAgent = new Agent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0,
         pipelining: 1,
@@ -137,13 +137,11 @@ export const fetch: typeof globalThis.fetch = (() => {
             let headers: any = {};
             let rawBody: any = undefined;
 
-            // Extract from input object
             if (typeof input === 'object' && input !== null && 'method' in input) {
                 method = input.method || 'GET';
                 rawBody = input.body;
                 headers = input.headers;
             }
-            // Extract from init object (overrides input)
             if (init) {
                 if (init.method) method = init.method;
                 if (init.body) rawBody = init.body;
@@ -153,18 +151,17 @@ export const fetch: typeof globalThis.fetch = (() => {
             method = method.toUpperCase();
 
             // --- 4. STRICT BODY HANDLING ---
-            // Undici throws INVALID_ARG if you send a body with GET/HEAD
             if (method === 'GET' || method === 'HEAD') {
                 rawBody = undefined;
             }
 
-            // Buffer the body if it exists
+            // Buffer the body
             let finalBody = rawBody;
             if (finalBody && typeof finalBody !== 'string' && !Buffer.isBuffer(finalBody)) {
                 try {
                     finalBody = await new Response(finalBody).text();
                 } catch (e) {
-                    finalBody = undefined; // If we can't read it, drop it
+                    finalBody = undefined;
                 }
             }
 
@@ -183,26 +180,25 @@ export const fetch: typeof globalThis.fetch = (() => {
             }
             if (isLocal) cleanHeaders['Host'] = '127.0.0.1';
 
-            // --- 6. CONSTRUCT FINAL OPTIONS ---
+            // --- 6. SEND ---
             const fetchOptions: any = {
                 method: method,
                 headers: cleanHeaders,
                 dispatcher: selectedDispatcher
             };
-
-            // Only attach body if valid
             if (finalBody !== undefined && finalBody !== null) {
                 fetchOptions.body = finalBody;
             }
 
-            // DEBUG LOGGING (Check Console if this fails!)
-            // console.log(`[Net-Wrapper] URL: ${url} | Method: ${method} | BodyLen: ${finalBody ? finalBody.length : 0}`);
+            // [LOGGING ENABLED] This will confirm Undici is working
+            console.log(`[Net-Wrapper] ✅ SUCCESS: Sending via Undici to ${url}`);
 
             return await undiciFetch(url, fetchOptions) as any;
 
         } catch (err: any) {
             const cause = err.cause ? JSON.stringify(err.cause) : "Unknown";
-            // console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
+            // [LOGGING ENABLED] This will confirm if we are falling back
+            console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
             return baseFetch(input, init);
         }
     };
