@@ -117,35 +117,60 @@ export const fetch: typeof globalThis.fetch = (() => {
         baseFetch = undiciFetch
     } else {
         baseFetch = (input: any, init: any) => {
-            // 1. Unwrap Request objects (undici needs a plain URL string)
-            let url = input;
-            let options = init || {};
             
-            if (typeof input === 'object' && input !== null && 'url' in input) {
-                url = input.url;
-                // Merge properties from the Request object if options are missing
-                options = {
-                    method: input.method,
-                    headers: input.headers,
-                    body: input.body,
-                    signal: input.signal,
-                    ...options
-                };
-            }
+            // --- SANITIZATION START ---
+            let url: string;
+            let options = init || {};
 
-            // 2. Fix Headers (undici prefers plain objects over Headers class)
-            if (options.headers && typeof options.headers.entries === 'function') {
-                const headers: Record<string, string> = {};
-                for (const [key, value] of options.headers.entries()) {
-                    headers[key] = value;
+            try {
+                // Case 1: Input is already a string
+                if (typeof input === 'string') {
+                    url = input;
                 }
-                options.headers = headers;
-            }
+                // Case 2: Input is a URL Object (has .href)
+                else if (input instanceof URL) {
+                    url = input.href;
+                }
+                // Case 3: Input is a Request Object (has .url)
+                else if (typeof input === 'object' && input !== null && 'url' in input) {
+                    url = input.url;
+                    // Merge properties from the Request object
+                    options = {
+                        method: input.method,
+                        headers: input.headers,
+                        body: input.body,
+                        signal: input.signal,
+                        ...options // init options take precedence
+                    };
+                }
+                // Case 4: Fallback (Try to stringify)
+                else {
+                    url = String(input);
+                }
 
-            // 3. Add 'duplex' (Required by undici for streaming bodies)
-            if (options.body && !options.duplex) {
-                options.duplex = 'half';
+                // Fix Headers: Convert Headers object to plain object
+                if (options.headers && typeof options.headers.entries === 'function' && !Array.isArray(options.headers)) {
+                    const headers: Record<string, string> = {};
+                    for (const [key, value] of options.headers.entries()) {
+                        headers[key] = value;
+                    }
+                    options.headers = headers;
+                }
+
+                // Add 'duplex' for streams (Required by undici)
+                if (options.body && !options.duplex) {
+                    options.duplex = 'half';
+                }
+
+            } catch (e) {
+                console.error("[Net-Wrapper] Error sanitizing args:", e);
+                // Fallback to original input if sanitization explodes
+                url = input;
             }
+            // --- SANITIZATION END ---
+
+            // Console log to debug if it still fails (View in Help > Toggle Developer Tools)
+            // console.log("[Net-Wrapper] Fetching:", url);
 
             return undiciFetch(url, {
                 ...options,
@@ -154,6 +179,7 @@ export const fetch: typeof globalThis.fetch = (() => {
         }
     }
 
+    // Force return type to Promise<Response> to satisfy TypeScript
     return (input: any, init?: any): Promise<Response> => {
         return (mockFetch || baseFetch)(input, init) as Promise<Response>
     }
