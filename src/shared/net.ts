@@ -93,119 +93,35 @@
  * ```
  */
 
-import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
+import { EnvHttpProxyAgent, setGlobalDispatcher, fetch as undiciFetch } from "undici"
 
+let mockFetch: typeof globalThis.fetch | undefined
+
+/**
+ * Platform-configured fetch that respects proxy settings.
+ * Use this instead of global fetch to ensure proper proxy configuration.
+ *
+ * @example
+ * ```typescript
+ * import { fetch } from '@/shared/net'
+ * const response = await fetch('https://api.example.com')
+ * ```
+ */
 export const fetch: typeof globalThis.fetch = (() => {
-    const baseFetch = globalThis.fetch; 
-    
-    // 1. Internet Agent
-    const proxyAgent = new EnvHttpProxyAgent({
-        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
-    });
+	// Note: Don't use Logger here; it may not be initialized.
 
-    // 2. Local Agent (Standard)
-    const localAgent = new Agent({
-        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
-    });
+	let baseFetch: typeof globalThis.fetch = globalThis.fetch
+	// Note: See esbuild.mjs, process.env.IS_STANDALONE is statically rewritten
+	// 'true' in the JetBrains/CLI build.
+	if (process.env.IS_STANDALONE) {
+		// Configure undici with ProxyAgent
+		const agent = new EnvHttpProxyAgent({})
+		setGlobalDispatcher(agent)
+		baseFetch = undiciFetch as any as typeof globalThis.fetch
+	}
 
-    return async (input: any, init?: any): Promise<Response> => {
-        try {
-            // --- 1. RESOLVE URL ---
-            let url: string = '';
-            if (typeof input === 'string') {
-                url = input;
-            } else if (input instanceof URL) {
-                url = input.href;
-            } else if (typeof input === 'object' && input !== null && 'url' in input) {
-                url = input.url;
-            }
-
-            // Typo Fixes
-            if (url.includes('\\')) url = url.replace(/\\/g, '/');
-            if (url.includes('localhost')) url = url.replace('localhost', '127.0.0.1');
-
-            // --- 2. SELECT AGENT ---
-            let hostname = 'localhost';
-            try { hostname = new URL(url).hostname; } catch (e) {}
-            
-            const isPrivate = /^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(hostname);
-            const isLocal = isPrivate || hostname === 'localhost' || hostname === '0.0.0.0';
-            
-            const selectedDispatcher = isLocal ? localAgent : proxyAgent;
-
-            // --- 3. EXTRACT DATA ---
-            let method = 'GET';
-            let rawBody: any = undefined;
-            
-            // We ignore original headers to avoid pollution
-            // let originalHeaders: any = {}; 
-
-            if (typeof input === 'object' && input !== null && 'method' in input) {
-                method = input.method || 'GET';
-                rawBody = input.body;
-                // originalHeaders = input.headers;
-            }
-            if (init) {
-                if (init.method) method = init.method;
-                if (init.body) rawBody = init.body;
-                // if (init.headers) originalHeaders = init.headers;
-            }
-
-            method = method.toUpperCase();
-            if (method === 'GET' || method === 'HEAD') rawBody = undefined;
-
-            // --- 4. PREPARE BODY (JSON String) ---
-            let finalBody = rawBody;
-            if (finalBody) {
-                if (typeof finalBody === 'string') {
-                    // Already a string, good.
-                } else if (typeof finalBody.text === 'function') {
-                    finalBody = await finalBody.text(); // Stream -> String
-                } else {
-                    try {
-                        finalBody = JSON.stringify(finalBody); // Object -> String
-                    } catch (e) {
-                        finalBody = String(finalBody);
-                    }
-                }
-            }
-
-            // --- 5. RECONSTRUCT HEADERS (Nuclear Option) ---
-            // We manually build a clean object. Undici hates VS Code header objects.
-            const cleanHeaders: Record<string, string> = {
-                'Content-Type': 'application/json',
-                'Connection': 'keep-alive'
-            };
-            
-            if (isLocal) {
-                cleanHeaders['Host'] = hostname;
-            }
-
-            // --- 6. SEND ---
-            const fetchOptions: any = {
-                method: method,
-                headers: cleanHeaders,
-                dispatcher: selectedDispatcher
-            };
-
-            if (finalBody) {
-                fetchOptions.body = finalBody;
-            }
-
-            // DEBUG LOGS
-            console.log(`[Net-Wrapper] URL: ${url}`);
-            console.log(`[Net-Wrapper] Agent: ${isLocal ? 'Local' : 'Proxy'}`);
-            console.log(`[Net-Wrapper] Body Type: ${typeof finalBody}`);
-
-            return await undiciFetch(url, fetchOptions) as any;
-
-        } catch (err: any) {
-            const cause = err.cause ? JSON.stringify(err.cause) : "Unknown";
-            console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
-            return baseFetch(input, init);
-        }
-    };
-})();
+	return (input: string | URL | Request, init?: RequestInit): Promise<Response> => (mockFetch || baseFetch)(input, init)
+})()
 
 /**
  * Mocks `fetch` for testing and calls `callback`. Then restores `fetch`. If the
