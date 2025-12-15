@@ -1,15 +1,17 @@
-name: Build VSIX
+name: Build Multi-Platform
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
 
 jobs:
   build:
-    name: Build Extension
-    runs-on: ubuntu-latest
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -19,13 +21,14 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: npm install
 
       - name: Generate Code
         run: npm run protos
 
-      - name: Install Webview dependencies
+      - name: Install Webview Dependencies
+        shell: bash
         run: |
           cd webview-ui
           npm install
@@ -35,12 +38,14 @@ jobs:
 
       - name: Package Extension
         id: package
+        shell: bash
         run: |
-          vsce package --out my-cline-fork.vsix
-          echo "vsix_path=my-cline-fork.vsix" >> $GITHUB_OUTPUT
+          # Package the extension. vsce will automatically detect the OS and bundle the correct native files.
+          vsce package --out cline-${{ matrix.os }}.vsix
+          echo "vsix_path=cline-${{ matrix.os }}.vsix" >> $GITHUB_OUTPUT
 
       - name: Upload VSIX
         uses: actions/upload-artifact@v4
         with:
-          name: cline-extension
+          name: extension-${{ matrix.os }}
           path: ${{ steps.package.outputs.vsix_path }}
