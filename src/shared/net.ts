@@ -115,7 +115,11 @@ export const fetch: typeof globalThis.fetch = (() => {
 	// 'true' in the JetBrains/CLI build.
 	if (process.env.IS_STANDALONE) {
 		// Configure undici with ProxyAgent
-		const agent = new EnvHttpProxyAgent({})
+		const agent = new EnvHttpProxyAgent({
+			headersTimeout: 10800000, // 3 hours
+			bodyTimeout: 10800000, // 3 hours
+			connectTimeout: 10800000, // 3 hours
+		})
 		setGlobalDispatcher(agent)
 		baseFetch = undiciFetch as any as typeof globalThis.fetch
 	}
