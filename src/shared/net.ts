@@ -93,27 +93,24 @@
  * ```
  */
 
-import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
+import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 
-let mockFetch: typeof globalThis.fetch | undefined
-
-/**
- * Platform-configured fetch that respects proxy settings and removes default timeouts.
- * Includes automatic fallback to standard fetch if undici fails.
- */
 export const fetch: typeof globalThis.fetch = (() => {
     const baseFetch = globalThis.fetch; 
     
-    const agent = new EnvHttpProxyAgent({
-        headersTimeout: 0, 
-        connectTimeout: 0, 
-        keepAliveTimeout: 0, 
-        bodyTimeout: 0 
+    // 1. Agent for Internet calls (Uses Proxy + Unlimited Timeout)
+    const proxyAgent = new EnvHttpProxyAgent({
+        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0 
+    });
+
+    // 2. Agent for Localhost calls (Direct Connection + Unlimited Timeout)
+    const localAgent = new Agent({
+        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0 
     });
 
     return async (input: any, init?: any): Promise<Response> => {
         try {
-            // --- PREPARE URL ---
+            // --- PARSE URL ---
             let url: string;
             if (typeof input === 'string') {
                 url = input;
@@ -125,54 +122,49 @@ export const fetch: typeof globalThis.fetch = (() => {
                 throw new Error("Cannot parse URL for undici");
             }
 
-            // [FIX] Force IPv4 for Localhost to prevent Windows ::1 errors
+            // [FIX 1] Force IPv4 for Windows
             if (url.includes('localhost')) {
                 url = url.replace('localhost', '127.0.0.1');
             }
 
-            // --- PREPARE OPTIONS ---
+            // [FIX 2] Determine which Agent to use
+            // If it's a local IP, use the "Direct" agent to bypass Corporate Proxies
+            const isLocal = url.includes('127.0.0.1') || url.includes('0.0.0.0');
+            const selectedDispatcher = isLocal ? localAgent : proxyAgent;
+
+            // --- OPTIONS SETUP ---
             let options = init || {};
             if (typeof input === 'object' && input !== null && 'method' in input) {
                 options = {
-                    method: input.method,
-                    headers: input.headers,
-                    body: input.body,
-                    signal: input.signal,
-                    ...options
+                    method: input.method, headers: input.headers, 
+                    body: input.body, signal: input.signal, ...options
                 };
             }
 
-            // --- SANITIZE HEADERS ---
+            // Clean Headers
             if (options.headers && typeof options.headers.entries === 'function' && !Array.isArray(options.headers)) {
                 const h: Record<string, string> = {};
-                for (const [key, value] of options.headers.entries()) {
-                    h[key] = value;
-                }
+                for (const [key, value] of options.headers.entries()) { h[key] = value; }
                 options.headers = h;
             }
 
-            // --- HANDLE BODY & DUPLEX ---
+            // Handle Duplex
             if (options.body) {
                 const isStringOrBuffer = typeof options.body === 'string' || 
                                          (options.body instanceof Uint8Array) || 
                                          (globalThis.Buffer && Buffer.isBuffer(options.body));
-                
-                if (!isStringOrBuffer && !options.duplex) {
-                    options.duplex = 'half';
-                }
+                if (!isStringOrBuffer && !options.duplex) { options.duplex = 'half'; }
             }
 
-            // LOGGING: PRIMARY ACTIVE (Uncommented so you can see it!)
-            console.log("[Net-Wrapper] ✅ PRIMARY: Using Unlimited Timeout for:", url);
+            // console.log(`[Net-Wrapper] ✅ PRIMARY: Fetching ${url} (Local: ${isLocal})`);
 
             return await undiciFetch(url, {
                 ...options,
-                dispatcher: agent
+                dispatcher: selectedDispatcher
             }) as any;
 
         } catch (err) {
-            // LOGGING: SAFETY NET ACTIVE
-            console.warn("[Net-Wrapper] ⚠️ SAFETY NET: Undici failed, using fallback. Error:", err);
+            console.warn("[Net-Wrapper] ⚠️ SAFETY NET: Undici failed, using fallback.", err);
             return baseFetch(input, init);
         }
     };
