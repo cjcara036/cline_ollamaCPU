@@ -102,11 +102,9 @@ export const fetch: typeof globalThis.fetch = (() => {
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
 
-    // 2. Localhost Agent
+    // 2. Localhost Agent (Simplified to avoid config errors)
     const localAgent = new Agent({
-        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0,
-        pipelining: 1,
-        keepAlive: true
+        headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
 
     return async (input: any, init?: any): Promise<Response> => {
@@ -155,13 +153,28 @@ export const fetch: typeof globalThis.fetch = (() => {
                 rawBody = undefined;
             }
 
-            // Buffer the body
             let finalBody = rawBody;
-            if (finalBody && typeof finalBody !== 'string' && !Buffer.isBuffer(finalBody)) {
-                try {
-                    finalBody = await new Response(finalBody).text();
-                } catch (e) {
-                    finalBody = undefined;
+
+            // [CRITICAL FIX] Convert Plain Objects to JSON Strings
+            if (finalBody !== undefined && finalBody !== null) {
+                // If it's already a string, buffer, or array buffer, leave it alone.
+                const isPrimitive = typeof finalBody === 'string' || 
+                                    Buffer.isBuffer(finalBody) || 
+                                    (finalBody instanceof Uint8Array);
+                
+                if (!isPrimitive) {
+                    // If it has a .text() method (like a Stream/Response), read it
+                    if (typeof finalBody.text === 'function') {
+                         finalBody = await finalBody.text();
+                    } 
+                    // Otherwise, assume it's a JSON object and stringify it
+                    else {
+                        try {
+                            finalBody = JSON.stringify(finalBody);
+                        } catch (e) {
+                            finalBody = String(finalBody);
+                        }
+                    }
                 }
             }
 
@@ -186,18 +199,18 @@ export const fetch: typeof globalThis.fetch = (() => {
                 headers: cleanHeaders,
                 dispatcher: selectedDispatcher
             };
+            
+            // Only attach body if valid
             if (finalBody !== undefined && finalBody !== null) {
                 fetchOptions.body = finalBody;
             }
 
-            // [LOGGING ENABLED] This will confirm Undici is working
             console.log(`[Net-Wrapper] ✅ SUCCESS: Sending via Undici to ${url}`);
 
             return await undiciFetch(url, fetchOptions) as any;
 
         } catch (err: any) {
             const cause = err.cause ? JSON.stringify(err.cause) : "Unknown";
-            // [LOGGING ENABLED] This will confirm if we are falling back
             console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
             return baseFetch(input, init);
         }
