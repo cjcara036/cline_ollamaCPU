@@ -92,7 +92,6 @@
  * await axios.get(url, { ...getAxiosSettings() })
  * ```
  */
-
 import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 
 export const fetch: typeof globalThis.fetch = (() => {
@@ -106,15 +105,16 @@ export const fetch: typeof globalThis.fetch = (() => {
     // 2. Localhost Agent (Direct + Unlimited Timeout + FORCE HTTP/1.1)
     const localAgent = new Agent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0,
-        pipelining: 0,    // Disable pipelining (reduces complexity)
-        allowH2: false,   // Disable HTTP/2 (Ollama hates this)
-        keepAlive: true   // Keep connection open for performance
+        pipelining: 0,
+        allowH2: false,
+        keepAlive: true
     });
 
     return async (input: any, init?: any): Promise<Response> => {
         try {
-            // --- PARSE URL ---
-            let url: string;
+            // --- 1. RESOLVE URL ---
+            let url: string = '';
+            
             if (typeof input === 'string') {
                 url = input;
             } else if (input instanceof URL) {
@@ -122,64 +122,92 @@ export const fetch: typeof globalThis.fetch = (() => {
             } else if (typeof input === 'object' && input !== null && 'url' in input) {
                 url = input.url;
             } else {
-                throw new Error("Cannot parse URL for undici");
+                throw new Error("Cannot parse URL");
             }
 
-            // [FIX 1] Force IPv4 for Windows
+            // [FIX] Force IPv4 for Windows
             if (url.includes('localhost')) {
                 url = url.replace('localhost', '127.0.0.1');
             }
 
-            // [FIX 2] Determine Agent (Bypass Proxy for Local)
+            // --- 2. RESOLVE AGENT ---
             const isLocal = url.includes('127.0.0.1') || url.includes('0.0.0.0');
             const selectedDispatcher = isLocal ? localAgent : proxyAgent;
 
-            // --- OPTIONS SETUP ---
-            let options = init || {};
+            // --- 3. EXTRACT RAW DATA (Clean Object) ---
+            // We do NOT spread (...input) to avoid polluting the object with VS Code internals.
+            
+            let method = 'GET';
+            let headers: any = {};
+            let body: any = undefined;
+            let signal: any = undefined;
+
+            // Extract from 'input' if it is a Request object
             if (typeof input === 'object' && input !== null && 'method' in input) {
-                options = {
-                    method: input.method, headers: input.headers, 
-                    body: input.body, signal: input.signal, ...options
-                };
+                method = input.method;
+                body = input.body;
+                signal = input.signal;
+                headers = input.headers;
             }
 
-            // Clean Headers
-            if (options.headers && typeof options.headers.entries === 'function' && !Array.isArray(options.headers)) {
-                const h: Record<string, string> = {};
-                for (const [key, value] of options.headers.entries()) { h[key] = value; }
-                options.headers = h;
+            // Override with 'init' if present (takes precedence)
+            if (init) {
+                if (init.method) method = init.method;
+                if (init.body) body = init.body;
+                if (init.signal) signal = init.signal;
+                if (init.headers) headers = init.headers;
             }
 
-            // [FIX 3] Force Host Header to match IP (Ollama Fix)
-            if (isLocal && options.headers) {
-                // @ts-ignore
-                options.headers['Host'] = '127.0.0.1';
+            // --- 4. SANITIZE HEADERS ---
+            // Undici requires a plain object, not a Headers class instance
+            const cleanHeaders: Record<string, string> = {};
+            if (headers) {
+                if (typeof headers.entries === 'function' && !Array.isArray(headers)) {
+                    for (const [key, value] of headers.entries()) {
+                        cleanHeaders[key] = value;
+                    }
+                } else if (typeof headers === 'object') {
+                    Object.assign(cleanHeaders, headers);
+                }
+            }
+            
+            // [FIX] Force Host Header for Ollama
+            if (isLocal) {
+                cleanHeaders['Host'] = '127.0.0.1';
             }
 
-            // Handle Duplex
-            if (options.body) {
-                const isStringOrBuffer = typeof options.body === 'string' || 
-                                         (options.body instanceof Uint8Array) || 
-                                         (globalThis.Buffer && Buffer.isBuffer(options.body));
-                if (!isStringOrBuffer && !options.duplex) { options.duplex = 'half'; }
-            }
-
-            // LOGGING: Print the real error cause if it fails
-            return await undiciFetch(url, {
-                ...options,
+            // --- 5. CONSTRUCT SAFE OPTIONS ---
+            const fetchOptions: any = {
+                method: method,
+                headers: cleanHeaders,
+                body: body,
+                signal: signal,
                 dispatcher: selectedDispatcher
-            }) as any;
+            };
+
+            // [FIX] Add Duplex for Streams
+            if (body) {
+                // If body is NOT a string/buffer, it's a stream -> requires duplex
+                const isPrimitive = typeof body === 'string' || 
+                                    (globalThis.Buffer && Buffer.isBuffer(body)) || 
+                                    (body instanceof Uint8Array);
+                
+                if (!isPrimitive) {
+                    fetchOptions.duplex = 'half'; 
+                }
+            }
+
+            // console.log(`[Net-Wrapper] ✅ PRIMARY: Fetching ${url}`);
+
+            return await undiciFetch(url, fetchOptions) as any;
 
         } catch (err: any) {
-            // Detailed Error Logging
             const cause = err.cause ? JSON.stringify(err.cause) : "Unknown";
             console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
-            
             return baseFetch(input, init);
         }
     };
 })();
-
 /**
  * Mocks `fetch` for testing and calls `callback`. Then restores `fetch`. If the
  * specified callback returns a Promise, the fetch is restored when that Promise
