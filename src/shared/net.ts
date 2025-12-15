@@ -105,9 +105,8 @@ export const fetch: typeof globalThis.fetch = (() => {
     // 2. Localhost Agent (Direct + Unlimited Timeout)
     const localAgent = new Agent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0,
-        // [FIXED] Removed 'pipelining: 0' (Invalid) and 'allowH2' (Invalid for Agent)
-        keepAlive: true,
-        pipelining: 1 
+        pipelining: 1,
+        keepAlive: true
     });
 
     return async (input: any, init?: any): Promise<Response> => {
@@ -138,57 +137,72 @@ export const fetch: typeof globalThis.fetch = (() => {
             let headers: any = {};
             let rawBody: any = undefined;
 
+            // Extract from input object
             if (typeof input === 'object' && input !== null && 'method' in input) {
-                method = input.method;
+                method = input.method || 'GET';
                 rawBody = input.body;
                 headers = input.headers;
             }
+            // Extract from init object (overrides input)
             if (init) {
                 if (init.method) method = init.method;
                 if (init.body) rawBody = init.body;
                 if (init.headers) headers = init.headers;
             }
 
-            // --- 4. BUFFER THE BODY (Reliability Fix) ---
+            method = method.toUpperCase();
+
+            // --- 4. STRICT BODY HANDLING ---
+            // Undici throws INVALID_ARG if you send a body with GET/HEAD
+            if (method === 'GET' || method === 'HEAD') {
+                rawBody = undefined;
+            }
+
+            // Buffer the body if it exists
             let finalBody = rawBody;
-            if (rawBody && typeof rawBody !== 'string' && !Buffer.isBuffer(rawBody)) {
+            if (finalBody && typeof finalBody !== 'string' && !Buffer.isBuffer(finalBody)) {
                 try {
-                    finalBody = await new Response(rawBody).text();
+                    finalBody = await new Response(finalBody).text();
                 } catch (e) {
-                    try { finalBody = JSON.stringify(rawBody); } catch (e2) { finalBody = String(rawBody); }
+                    finalBody = undefined; // If we can't read it, drop it
                 }
             }
 
             // --- 5. CLEAN HEADERS ---
             const cleanHeaders: Record<string, string> = {};
             if (headers) {
-                if (typeof headers.entries === 'function' && !Array.isArray(headers)) {
-                    for (const [key, value] of headers.entries()) {
+                const entries = (typeof headers.entries === 'function' && !Array.isArray(headers)) 
+                    ? headers.entries() 
+                    : Object.entries(headers);
+                
+                for (const [key, value] of entries) {
+                    if (value !== undefined && value !== null) {
                         cleanHeaders[key] = String(value);
-                    }
-                } else if (typeof headers === 'object') {
-                    for (const key in headers) {
-                         if (Object.prototype.hasOwnProperty.call(headers, key)) {
-                            cleanHeaders[key] = String(headers[key]);
-                         }
                     }
                 }
             }
             if (isLocal) cleanHeaders['Host'] = '127.0.0.1';
 
-            // --- 6. SEND ---
+            // --- 6. CONSTRUCT FINAL OPTIONS ---
             const fetchOptions: any = {
-                method: method.toUpperCase(),
+                method: method,
                 headers: cleanHeaders,
-                body: finalBody,
                 dispatcher: selectedDispatcher
             };
+
+            // Only attach body if valid
+            if (finalBody !== undefined && finalBody !== null) {
+                fetchOptions.body = finalBody;
+            }
+
+            // DEBUG LOGGING (Check Console if this fails!)
+            // console.log(`[Net-Wrapper] URL: ${url} | Method: ${method} | BodyLen: ${finalBody ? finalBody.length : 0}`);
 
             return await undiciFetch(url, fetchOptions) as any;
 
         } catch (err: any) {
             const cause = err.cause ? JSON.stringify(err.cause) : "Unknown";
-            console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
+            // console.warn(`[Net-Wrapper] ⚠️ SAFETY NET ACTIVE. Undici Error: ${err.message} | Cause: ${cause}`);
             return baseFetch(input, init);
         }
     };
