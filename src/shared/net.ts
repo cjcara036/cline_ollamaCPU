@@ -97,17 +97,17 @@ import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from "undici"
 export const fetch: typeof globalThis.fetch = (() => {
     const baseFetch = globalThis.fetch; 
     
-    // 1. Internet Agent
+    // 1. Internet Agent (Proxy + Unlimited Timeout)
     const proxyAgent = new EnvHttpProxyAgent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0
     });
 
-    // 2. Localhost Agent (Direct Connection)
+    // 2. Localhost Agent (Direct + Unlimited Timeout)
     const localAgent = new Agent({
         headersTimeout: 0, connectTimeout: 0, keepAliveTimeout: 0, bodyTimeout: 0,
-        pipelining: 0,
-        allowH2: false,
-        keepAlive: true
+        // [FIXED] Removed 'pipelining: 0' (Invalid) and 'allowH2' (Invalid for Agent)
+        keepAlive: true,
+        pipelining: 1 
     });
 
     return async (input: any, init?: any): Promise<Response> => {
@@ -149,17 +149,12 @@ export const fetch: typeof globalThis.fetch = (() => {
                 if (init.headers) headers = init.headers;
             }
 
-            // --- 4. [CRITICAL FIX] BUFFER THE BODY ---
-            // Undici hates VS Code streams. We convert it to a simple String.
+            // --- 4. BUFFER THE BODY (Reliability Fix) ---
             let finalBody = rawBody;
-            
             if (rawBody && typeof rawBody !== 'string' && !Buffer.isBuffer(rawBody)) {
-                // If it's a stream/object, try to read it as text
                 try {
-                    // Use the global Response object to consume the stream
                     finalBody = await new Response(rawBody).text();
                 } catch (e) {
-                    // If that fails, JSON stringify it
                     try { finalBody = JSON.stringify(rawBody); } catch (e2) { finalBody = String(rawBody); }
                 }
             }
@@ -188,10 +183,6 @@ export const fetch: typeof globalThis.fetch = (() => {
                 body: finalBody,
                 dispatcher: selectedDispatcher
             };
-
-            // No 'duplex' needed because body is now guaranteed to be a String/Buffer
-            
-            // console.log(`[Net-Wrapper] Buffered Body Size: ${finalBody ? finalBody.length : 0}`);
 
             return await undiciFetch(url, fetchOptions) as any;
 
