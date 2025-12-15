@@ -114,7 +114,6 @@ export const fetch: typeof globalThis.fetch = (() => {
         try {
             // --- 1. RESOLVE URL ---
             let url: string = '';
-            
             if (typeof input === 'string') {
                 url = input;
             } else if (input instanceof URL) {
@@ -125,7 +124,7 @@ export const fetch: typeof globalThis.fetch = (() => {
                 throw new Error("Cannot parse URL");
             }
 
-            // [FIX] Force IPv4 for Windows
+            // Force IPv4 for Windows
             if (url.includes('localhost')) {
                 url = url.replace('localhost', '127.0.0.1');
             }
@@ -134,32 +133,25 @@ export const fetch: typeof globalThis.fetch = (() => {
             const isLocal = url.includes('127.0.0.1') || url.includes('0.0.0.0');
             const selectedDispatcher = isLocal ? localAgent : proxyAgent;
 
-            // --- 3. EXTRACT RAW DATA (Clean Object) ---
-            // We do NOT spread (...input) to avoid polluting the object with VS Code internals.
-            
+            // --- 3. EXTRACT RAW DATA ---
             let method = 'GET';
             let headers: any = {};
             let body: any = undefined;
-            let signal: any = undefined;
+            // Note: We deliberately IGNORE 'signal' here to fix UND_ERR_INVALID_ARG
 
-            // Extract from 'input' if it is a Request object
             if (typeof input === 'object' && input !== null && 'method' in input) {
                 method = input.method;
                 body = input.body;
-                signal = input.signal;
                 headers = input.headers;
             }
 
-            // Override with 'init' if present (takes precedence)
             if (init) {
                 if (init.method) method = init.method;
                 if (init.body) body = init.body;
-                if (init.signal) signal = init.signal;
                 if (init.headers) headers = init.headers;
             }
 
-            // --- 4. SANITIZE HEADERS ---
-            // Undici requires a plain object, not a Headers class instance
+            // --- 4. CLEAN HEADERS ---
             const cleanHeaders: Record<string, string> = {};
             if (headers) {
                 if (typeof headers.entries === 'function' && !Array.isArray(headers)) {
@@ -167,11 +159,14 @@ export const fetch: typeof globalThis.fetch = (() => {
                         cleanHeaders[key] = value;
                     }
                 } else if (typeof headers === 'object') {
-                    Object.assign(cleanHeaders, headers);
+                    for (const key in headers) {
+                        if (headers[key] !== undefined && headers[key] !== null) {
+                            cleanHeaders[key] = String(headers[key]);
+                        }
+                    }
                 }
             }
             
-            // [FIX] Force Host Header for Ollama
             if (isLocal) {
                 cleanHeaders['Host'] = '127.0.0.1';
             }
@@ -181,23 +176,19 @@ export const fetch: typeof globalThis.fetch = (() => {
                 method: method,
                 headers: cleanHeaders,
                 body: body,
-                signal: signal,
                 dispatcher: selectedDispatcher
+                // signal: REMOVED to prevent crash
             };
 
-            // [FIX] Add Duplex for Streams
+            // Add Duplex for Streams
             if (body) {
-                // If body is NOT a string/buffer, it's a stream -> requires duplex
                 const isPrimitive = typeof body === 'string' || 
                                     (globalThis.Buffer && Buffer.isBuffer(body)) || 
                                     (body instanceof Uint8Array);
-                
                 if (!isPrimitive) {
                     fetchOptions.duplex = 'half'; 
                 }
             }
-
-            // console.log(`[Net-Wrapper] ✅ PRIMARY: Fetching ${url}`);
 
             return await undiciFetch(url, fetchOptions) as any;
 
