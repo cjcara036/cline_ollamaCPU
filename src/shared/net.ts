@@ -105,8 +105,6 @@ export const fetch: typeof globalThis.fetch = (() => {
 
     let baseFetch: any = globalThis.fetch
 
-    // Configure undici with timeouts disabled to allow the application
-    // to control request duration via the 'requestTimeoutMs' setting.
     const agent = new EnvHttpProxyAgent({
         headersTimeout: 0,
         connectTimeout: 0,
@@ -115,26 +113,51 @@ export const fetch: typeof globalThis.fetch = (() => {
     })
 
     if (process.env.IS_STANDALONE) {
-        // Standalone (CLI/JetBrains): set as global dispatcher
         setGlobalDispatcher(agent)
         baseFetch = undiciFetch
     } else {
-        // VSCode/VSCodium: explicitly use undici with our custom agent
-        // to bypass the default global fetch 300s timeout.
         baseFetch = (input: any, init: any) => {
-            return undiciFetch(input, {
-                ...init,
+            // 1. Unwrap Request objects (undici needs a plain URL string)
+            let url = input;
+            let options = init || {};
+            
+            if (typeof input === 'object' && input !== null && 'url' in input) {
+                url = input.url;
+                // Merge properties from the Request object if options are missing
+                options = {
+                    method: input.method,
+                    headers: input.headers,
+                    body: input.body,
+                    signal: input.signal,
+                    ...options
+                };
+            }
+
+            // 2. Fix Headers (undici prefers plain objects over Headers class)
+            if (options.headers && typeof options.headers.entries === 'function') {
+                const headers: Record<string, string> = {};
+                for (const [key, value] of options.headers.entries()) {
+                    headers[key] = value;
+                }
+                options.headers = headers;
+            }
+
+            // 3. Add 'duplex' (Required by undici for streaming bodies)
+            if (options.body && !options.duplex) {
+                options.duplex = 'half';
+            }
+
+            return undiciFetch(url, {
+                ...options,
                 dispatcher: agent,
             } as any)
         }
     }
 
-    // AGGRESSIVE CASTING: Force inputs to 'any' to bypass TS2345 error
     return (input: any, init?: any): Promise<Response> => {
         return (mockFetch || baseFetch)(input, init) as Promise<Response>
     }
 })()
-
 /**
  * Mocks `fetch` for testing and calls `callback`. Then restores `fetch`. If the
  * specified callback returns a Promise, the fetch is restored when that Promise
