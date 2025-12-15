@@ -129,7 +129,7 @@ export const fetch: typeof globalThis.fetch = (() => {
         }
     }
 
-    return (input: string | URL | Request, init?: RequestInit): Promise<Response> => (mockFetch || baseFetch)(input, init)
+    return (input: string | URL | Request, init?: RequestInit): Promise<Response> => (mockFetch || baseFetch)(input as any, init)
 })()
 
 /**
